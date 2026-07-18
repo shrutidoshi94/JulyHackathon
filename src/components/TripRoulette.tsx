@@ -20,10 +20,10 @@ export function TripRoulette({ options, activeIndex, onSelect, onHover }: Props)
       <div className="mb-4 flex items-end justify-between gap-4">
         <div>
           <p className="font-display text-sm uppercase tracking-[0.28em] text-[var(--accent)]">
-            Roulette
+            Ports of call
           </p>
           <h2 className="font-display text-2xl text-[var(--sand)] md:text-3xl">
-            Three spontaneous spins
+            Three bookable voyages
           </h2>
         </div>
         <p className="hidden max-w-xs text-right text-sm text-[var(--sand)]/70 md:block">
