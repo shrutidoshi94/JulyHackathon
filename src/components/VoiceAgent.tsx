@@ -3,10 +3,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MicButton } from './MicButton';
 import { TripRoulette } from './TripRoulette';
+import {
+  DEFAULT_WHEEL_DESTINATIONS,
+  RouletteWheel,
+  type WheelSegment,
+} from './RouletteWheel';
+import { SeaAdventureBackdrop } from './SeaAdventureBackdrop';
+import { SailorMascot } from './SailorMascot';
 import { PaymentPanel } from './PaymentPanel';
 import { DisruptionBanner } from './DisruptionBanner';
 import { InstallPrompt } from './InstallPrompt';
 import { createRecognizer, isSpeechSupported, speak, stopSpeaking } from '@/lib/speech';
+import { unlockRouletteAudio } from '@/lib/roulette-sound';
+import { startSailorTheme, toggleSailorTheme } from '@/lib/sailor-theme';
 import type { ConversationPhase, TripOption } from '@/lib/types';
 
 type IntentResponse = {
@@ -24,9 +33,6 @@ type IntentResponse = {
   error?: string;
 };
 
-const HERO_FALLBACK =
-  'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=2000&q=80';
-
 const DEMO_PROMPT =
   'I have $800, I want to leave next Thursday for 3 days, and I\'m feeling adventurous.';
 
@@ -41,12 +47,26 @@ function sessionId() {
   return id;
 }
 
+function segmentsFromOptions(options: TripOption[]): WheelSegment[] {
+  if (!options.length) return DEFAULT_WHEEL_DESTINATIONS;
+  // Fill a classic 12-pocket wheel so the spin feels like roulette.
+  const pockets = 12;
+  return Array.from({ length: pockets }, (_, i) => {
+    const opt = options[i % options.length];
+    return {
+      id: `${opt.id}-${i}`,
+      label: opt.destination,
+      sublabel: `$${opt.totalPrice}`,
+    };
+  });
+}
+
 export function VoiceAgent() {
   const [phase, setPhase] = useState<ConversationPhase>('idle');
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [agentLine, setAgentLine] = useState(
-    'Speak a budget, dates, and a mood. I will spin three trips.',
+    'Ahoy! Spin the sailor roulette — or speak a budget, dates, and a mood.',
   );
   const [options, setOptions] = useState<TripOption[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -61,14 +81,37 @@ export function VoiceAgent() {
   const [disruption, setDisruption] = useState<string | null>(null);
   const [speechOk, setSpeechOk] = useState(false);
   const [textInput, setTextInput] = useState('');
+  const [spinKey, setSpinKey] = useState(0);
+  const [forcedIndex, setForcedIndex] = useState<number | null>(null);
+  const [wheelSize, setWheelSize] = useState(400);
+  const [themeOn, setThemeOn] = useState(false);
   const recognitionRef = useRef<ReturnType<typeof createRecognizer>>(null);
+  const musicStarted = useRef(false);
   const sid = useMemo(() => sessionId(), []);
 
-  const heroUrl = options[activeIndex]?.imageUrl || HERO_FALLBACK;
-  const heroTitle = options[activeIndex]?.destination;
+  const segments = useMemo(() => segmentsFromOptions(options), [options]);
+
+  const ensureTheme = useCallback(() => {
+    if (musicStarted.current) return;
+    musicStarted.current = true;
+    startSailorTheme();
+    setThemeOn(true);
+  }, []);
 
   useEffect(() => {
     setSpeechOk(isSpeechSupported());
+  }, []);
+
+  useEffect(() => {
+    const sync = () => {
+      const w = window.innerWidth;
+      if (w < 400) setWheelSize(300);
+      else if (w < 768) setWheelSize(340);
+      else setWheelSize(440);
+    };
+    sync();
+    window.addEventListener('resize', sync);
+    return () => window.removeEventListener('resize', sync);
   }, []);
 
   const talk = useCallback((line: string) => {
@@ -76,14 +119,22 @@ export function VoiceAgent() {
     speak(line);
   }, []);
 
+  const bumpSpin = useCallback((landOn?: number | null) => {
+    setForcedIndex(landOn ?? null);
+    setSpinKey((k) => k + 1);
+  }, []);
+
   const sendTranscript = useCallback(
-    async (raw: string) => {
+    async (raw: string, { withSpin = false }: { withSpin?: boolean } = {}) => {
       const cleaned = raw.trim();
       if (!cleaned) return;
 
       setTranscript(cleaned);
       setPhase('thinking');
       stopSpeaking();
+      unlockRouletteAudio();
+      ensureTheme();
+      if (withSpin) bumpSpin(null);
 
       try {
         const res = await fetch('/api/voice/intent', {
@@ -97,6 +148,8 @@ export function VoiceAgent() {
           setOptions(data.options);
           setActiveIndex(0);
           setPayment(null);
+          // Second spin lands on the first trip pocket once segments update
+          bumpSpin(0);
         }
 
         if (data.approvalUrl && data.orderId && data.booking) {
@@ -124,7 +177,7 @@ export function VoiceAgent() {
         talk('I hit turbulence talking to the servers. Try again.');
       }
     },
-    [sid, talk],
+    [bumpSpin, ensureTheme, sid, talk],
   );
 
   const startListening = useCallback(() => {
@@ -134,7 +187,7 @@ export function VoiceAgent() {
     const recognition = createRecognizer({
       onResult: (text) => {
         setListening(false);
-        void sendTranscript(text);
+        void sendTranscript(text, { withSpin: true });
       },
       onError: () => {
         setListening(false);
@@ -158,6 +211,30 @@ export function VoiceAgent() {
       return;
     }
     startListening();
+  };
+
+  const onWheelSpinRequest = () => {
+    unlockRouletteAudio();
+    ensureTheme();
+    if (options.length) {
+      // Re-spin among current trip pockets
+      bumpSpin(Math.floor(Math.random() * options.length));
+      return;
+    }
+    void sendTranscript(DEMO_PROMPT, { withSpin: true });
+  };
+
+  const onToggleTheme = () => {
+    unlockRouletteAudio();
+    musicStarted.current = true;
+    setThemeOn(toggleSailorTheme());
+  };
+
+  const onWheelLanded = (segment: WheelSegment) => {
+    if (!options.length) return;
+    const baseId = segment.id.replace(/-\d+$/, '');
+    const idx = options.findIndex((o) => o.id === baseId);
+    if (idx >= 0) setActiveIndex(idx);
   };
 
   const bookRank = async (rank: number) => {
@@ -212,16 +289,11 @@ export function VoiceAgent() {
     }
   };
 
+  const landed = options[activeIndex];
+
   return (
-    <div className="relative min-h-screen overflow-hidden text-[var(--sand)]">
-      {/* Full-bleed hero plane */}
-      <div
-        key={heroUrl}
-        className="hero-fade absolute inset-0 bg-cover bg-center"
-        style={{ backgroundImage: `url(${heroUrl})` }}
-      />
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(6,22,28,0.55)_0%,rgba(6,22,28,0.35)_40%,rgba(6,22,28,0.88)_100%)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:radial-gradient(circle_at_20%_20%,rgba(242,169,59,0.18),transparent_40%),radial-gradient(circle_at_80%_0%,rgba(45,158,158,0.25),transparent_35%)]" />
+    <div className="relative min-h-screen overflow-x-hidden text-[var(--sand)]">
+      <SeaAdventureBackdrop />
 
       {disruption && (
         <DisruptionBanner
@@ -234,118 +306,144 @@ export function VoiceAgent() {
         />
       )}
 
-      <header className="relative z-10 flex items-center justify-between px-5 py-5 md:px-10">
-        <div className="flex items-center gap-3">
-          <span className="wheel-spin inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--accent)]/50 text-[var(--accent)]">
-            ✶
-          </span>
-          <div>
-            <p className="font-display text-lg tracking-wide md:text-xl">WanderWheel</p>
-            <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--sand)]/55">
-              Spontaneous voice travel
-            </p>
-          </div>
+      <header className="relative z-10 flex items-center justify-between px-5 py-4 md:px-10">
+        <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--sand)]/65">
+          Spinach-powered sailor roulette
+        </p>
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            className="text-[10px] uppercase tracking-[0.2em] text-[var(--sand)]/70 transition hover:text-[var(--accent)]"
+            aria-pressed={themeOn}
+          >
+            {themeOn ? 'Mute theme' : 'Play sailor theme'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void simulateDisruption()}
+            className="text-[10px] uppercase tracking-[0.2em] text-[var(--sand)]/55 transition hover:text-[var(--accent)]"
+          >
+            Disruption Shield
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => void simulateDisruption()}
-          className="text-[10px] uppercase tracking-[0.2em] text-[var(--sand)]/55 transition hover:text-[var(--accent)]"
-        >
-          Disruption Shield
-        </button>
       </header>
 
-      <main className="relative z-10 flex min-h-[72vh] flex-col justify-end px-5 pb-6 pt-10 md:px-10">
-        <div className="max-w-2xl">
-          <h1 className="font-display text-5xl leading-[0.95] tracking-tight text-[var(--sand)] md:text-7xl">
-            WanderWheel
-          </h1>
-          <p className="mt-4 max-w-md text-base text-[var(--sand)]/80 md:text-lg">
-            {heroTitle
-              ? `Feeling pulled toward ${heroTitle}? Say the word and it is yours.`
-              : 'Do not pick a destination. Speak a budget and a vibe — I will handle the rest.'}
-          </p>
+      {/* Hero: brand + sailor wheel + sea adventure */}
+      <main className="relative z-10 flex flex-col items-center px-4 pb-8 pt-2 md:px-10">
+        <h1 className="font-display text-center text-5xl leading-none tracking-tight text-[var(--sand)] drop-shadow-md md:text-7xl">
+          WanderWheel
+        </h1>
+        <p className="mt-3 max-w-md text-center text-sm text-[var(--sand)]/85 md:text-base">
+          {landed
+            ? `Land ho — ${landed.destination}! Say “book option ${landed.rank}” and we cast off.`
+            : 'Sailor-strength adventure: spin the roulette, hear the clicks, and let the sea pick your trip.'}
+        </p>
 
-          <div className="mt-8 flex flex-wrap items-center gap-5">
-            <MicButton
-              listening={listening}
-              thinking={phase === 'thinking'}
-              onClick={toggleMic}
-            />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs uppercase tracking-[0.22em] text-[var(--accent)]">
-                {phase === 'listening'
-                  ? 'Listening'
-                  : phase === 'thinking'
-                    ? 'Planning'
-                    : phase === 'awaiting_payment'
-                      ? 'Ready to pay'
-                      : phase === 'confirmed'
-                        ? 'Booked'
-                        : 'Your agent'}
-              </p>
-              <p className="mt-1 max-w-xl text-sm leading-relaxed text-[var(--sand)]/90 md:text-base">
-                {agentLine}
-              </p>
-              {transcript && (
-                <p className="mt-2 text-xs text-[var(--sand)]/50">You: “{transcript}”</p>
-              )}
-            </div>
-          </div>
+        <div className="relative mt-6 flex w-full max-w-3xl items-end justify-center md:mt-8">
+          <SailorMascot className="pointer-events-none absolute -left-2 bottom-6 hidden h-36 w-28 sm:block md:-left-4 md:h-48 md:w-36 lg:left-0" />
+          <RouletteWheel
+            segments={segments}
+            spinKey={spinKey}
+            forcedIndex={forcedIndex}
+            size={wheelSize}
+            onSpinRequest={onWheelSpinRequest}
+            onLanded={onWheelLanded}
+          />
+        </div>
 
-          {!speechOk && (
-            <p className="mt-4 text-xs text-[var(--sand)]/55">
-              Voice recognition needs Chrome/Edge. Use the text fallback below.
-            </p>
-          )}
-
-          <form
-            className="mt-5 flex max-w-xl gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void sendTranscript(textInput || DEMO_PROMPT);
-              setTextInput('');
-            }}
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-5">
+          <button
+            type="button"
+            onClick={onWheelSpinRequest}
+            disabled={phase === 'thinking'}
+            className="bg-[var(--spinach)] px-6 py-3 font-display text-sm uppercase tracking-[0.18em] text-[var(--sand)] shadow-lg transition hover:brightness-110 disabled:opacity-50"
           >
-            <input
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder={DEMO_PROMPT}
-              className="min-w-0 flex-1 border border-[var(--sand)]/25 bg-[rgba(6,22,28,0.55)] px-3 py-2.5 text-sm text-[var(--sand)] outline-none placeholder:text-[var(--sand)]/35 focus:border-[var(--accent)]"
-            />
-            <button
-              type="submit"
-              className="bg-[var(--sand)] px-4 py-2.5 font-display text-xs uppercase tracking-[0.16em] text-[var(--ink)]"
-            >
-              Send
-            </button>
-          </form>
+            {options.length ? 'Spin again' : 'Spin & sail'}
+          </button>
+          <MicButton
+            listening={listening}
+            thinking={phase === 'thinking'}
+            onClick={() => {
+              ensureTheme();
+              toggleMic();
+            }}
+          />
+        </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-5 max-w-lg text-center">
+          <p className="text-xs uppercase tracking-[0.22em] text-[var(--accent)]">
+            {phase === 'listening'
+              ? 'Listening'
+              : phase === 'thinking'
+                ? 'Charting a course'
+                : phase === 'awaiting_payment'
+                  ? 'Ready to pay'
+                  : phase === 'confirmed'
+                    ? 'All aboard'
+                    : 'Your sailor agent'}
+          </p>
+          <p className="mt-1 text-sm leading-relaxed text-[var(--sand)]/90 md:text-base">
+            {agentLine}
+          </p>
+          {transcript && (
+            <p className="mt-2 text-xs text-[var(--sand)]/50">You: “{transcript}”</p>
+          )}
+        </div>
+
+        {!speechOk && (
+          <p className="mt-3 text-center text-xs text-[var(--sand)]/55">
+            Voice recognition needs Chrome/Edge. Use the text fallback below.
+          </p>
+        )}
+
+        <form
+          className="mt-5 flex w-full max-w-xl gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void sendTranscript(textInput || DEMO_PROMPT, { withSpin: true });
+            setTextInput('');
+          }}
+        >
+          <input
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder={DEMO_PROMPT}
+            className="min-w-0 flex-1 border border-[var(--sand)]/25 bg-[rgba(6,22,28,0.55)] px-3 py-2.5 text-sm text-[var(--sand)] outline-none placeholder:text-[var(--sand)]/35 focus:border-[var(--accent)]"
+          />
+          <button
+            type="submit"
+            className="bg-[var(--sand)] px-4 py-2.5 font-display text-xs uppercase tracking-[0.16em] text-[var(--ink)]"
+          >
+            Send
+          </button>
+        </form>
+
+        <div className="mt-3 flex flex-wrap justify-center gap-3">
+          <button
+            type="button"
+            className="text-xs text-[var(--sand)]/60 underline-offset-4 hover:text-[var(--accent)] hover:underline"
+            onClick={() => void sendTranscript(DEMO_PROMPT, { withSpin: true })}
+          >
+            Try demo prompt
+          </button>
+          {options.length > 0 && (
             <button
               type="button"
               className="text-xs text-[var(--sand)]/60 underline-offset-4 hover:text-[var(--accent)] hover:underline"
-              onClick={() => void sendTranscript(DEMO_PROMPT)}
+              onClick={() => void sendTranscript('Reroll', { withSpin: true })}
             >
-              Try demo prompt
+              Reroll
             </button>
-            {options.length > 0 && (
-              <button
-                type="button"
-                className="text-xs text-[var(--sand)]/60 underline-offset-4 hover:text-[var(--accent)] hover:underline"
-                onClick={() => void sendTranscript('Reroll')}
-              >
-                Reroll
-              </button>
-            )}
-          </div>
-
-          {confirmedPnr && (
-            <p className="mt-5 border-l-2 border-[var(--accent)] pl-3 text-sm text-[var(--sand)]/85">
-              Confirmed · Sabre PNR <span className="text-[var(--accent)]">{confirmedPnr}</span>
-            </p>
           )}
         </div>
+
+        {confirmedPnr && (
+          <p className="mt-5 border-l-2 border-[var(--accent)] pl-3 text-sm text-[var(--sand)]/85">
+            Confirmed · Sabre PNR{' '}
+            <span className="text-[var(--accent)]">{confirmedPnr}</span>
+          </p>
+        )}
       </main>
 
       <TripRoulette
@@ -367,7 +465,7 @@ export function VoiceAgent() {
         />
       )}
 
-      <footer className="relative z-10 px-5 pb-8 text-[10px] uppercase tracking-[0.2em] text-[var(--sand)]/35 md:px-10">
+      <footer className="relative z-10 px-5 pb-8 text-center text-[10px] uppercase tracking-[0.2em] text-[var(--sand)]/35 md:px-10">
         Vocal Bridge · Sabre · PayPal · Unsplash
       </footer>
 
