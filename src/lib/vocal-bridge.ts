@@ -1,10 +1,9 @@
 /**
  * Vocal Bridge integration layer.
  *
- * Production: WebRTC live streaming via Vocal Bridge SDK.
- * Demo / local: Web Speech API (recognition + synthesis) on the client,
- * with this module providing outbound-call + TTS helpers for the
- * Disruption Shield.
+ * Browser: @vocalbridgeai/sdk connects via short-lived tokens from /api/voice-token.
+ * Server: mint tokens + optional outbound Disruption Shield calls.
+ * Fallback: Web Speech API when keys are absent.
  */
 
 export type VocalBridgeCallResult = {
@@ -13,8 +12,58 @@ export type VocalBridgeCallResult = {
   message: string;
 };
 
+export type VocalBridgeTokenResponse = {
+  url: string;
+  token: string;
+  room_name: string;
+  participant_identity: string;
+  expires_in: number;
+  agent_mode?: string;
+  livekit_url?: string;
+};
+
+export function getVocalBridgeBaseUrl() {
+  return (process.env.VOCAL_BRIDGE_BASE_URL || 'https://vocalbridgeai.com').replace(/\/$/, '');
+}
+
 export function isVocalBridgeConfigured(): boolean {
-  return Boolean(process.env.VOCAL_BRIDGE_API_KEY && process.env.VOCAL_BRIDGE_BASE_URL);
+  return Boolean(process.env.VOCAL_BRIDGE_API_KEY);
+}
+
+/** Mint a short-lived LiveKit room token for the browser SDK. */
+export async function mintVocalBridgeToken(params: {
+  participantName?: string;
+  sessionId?: string;
+}): Promise<VocalBridgeTokenResponse> {
+  if (!isVocalBridgeConfigured()) {
+    throw new Error('VOCAL_BRIDGE_API_KEY is not set');
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-API-Key': process.env.VOCAL_BRIDGE_API_KEY!,
+  };
+
+  const agentId = process.env.VOCAL_BRIDGE_AGENT_ID;
+  if (agentId) headers['X-Agent-Id'] = agentId;
+
+  const body: Record<string, string> = {
+    participant_name: params.participantName || 'Wanderer',
+  };
+  if (params.sessionId) body.session_id = params.sessionId;
+
+  const res = await fetch(`${getVocalBridgeBaseUrl()}/api/v1/token`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Vocal Bridge token failed: ${res.status} ${text}`);
+  }
+
+  return (await res.json()) as VocalBridgeTokenResponse;
 }
 
 export async function placeOutboundCall(params: {
@@ -31,18 +80,24 @@ export async function placeOutboundCall(params: {
     };
   }
 
-  const base = process.env.VOCAL_BRIDGE_BASE_URL!.replace(/\/$/, '');
-  const res = await fetch(`${base}/v1/calls`, {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${process.env.VOCAL_BRIDGE_API_KEY}`,
+    'Content-Type': 'application/json',
+    'X-API-Key': process.env.VOCAL_BRIDGE_API_KEY!,
+  };
+  if (process.env.VOCAL_BRIDGE_AGENT_ID) {
+    headers['X-Agent-Id'] = process.env.VOCAL_BRIDGE_AGENT_ID;
+  }
+
+  const res = await fetch(`${getVocalBridgeBaseUrl()}/api/v1/calls`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.VOCAL_BRIDGE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       to: params.phone,
       voice: 'wanderwheel-agent',
       script: params.script,
       metadata: params.metadata,
+      agent_id: process.env.VOCAL_BRIDGE_AGENT_ID,
       stream: { protocol: 'webrtc' },
     }),
   });
@@ -79,11 +134,11 @@ export function buildDisruptionScript(params: {
   return `Hi, this is WanderWheel. Your flight to ${params.destination} is delayed. I found a later one departing at ${when}. Say Approve to switch.`;
 }
 
-/** Client-side Vocal Bridge / WebRTC session config for the browser SDK. */
+/** Client-side config hints (no secrets). */
 export function getClientVoiceConfig() {
   return {
     mode: isVocalBridgeConfigured() ? ('vocal-bridge' as const) : ('web-speech' as const),
-    publicKey: process.env.NEXT_PUBLIC_VOCAL_BRIDGE_KEY || null,
+    tokenUrl: '/api/voice-token',
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   };
 }

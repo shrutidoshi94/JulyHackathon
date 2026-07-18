@@ -18,7 +18,7 @@ Speak a budget, date range, and mood — WanderWheel spins **3 fully bookable tr
 | Layer | Tech |
 | --- | --- |
 | Frontend | Next.js App Router, TypeScript, Tailwind CSS |
-| Voice | Vocal Bridge (WebRTC) + Web Speech API fallback |
+| Voice | Vocal Bridge WebRTC (`@vocalbridgeai/sdk`) + Web Speech API fallback |
 | Travel | Sabre REST (BFM + Passenger Name Record) |
 | Payments | PayPal Orders v2 (`@paypal/checkout-server-sdk`) |
 | Images | Unsplash |
@@ -44,7 +44,9 @@ See [`.env.example`](./.env.example) for:
 - `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` / `PAYPAL_WEBHOOK_ID`
 - `SABRE_CLIENT_ID` / `SABRE_CLIENT_SECRET`
 - `UNSPLASH_ACCESS_KEY`
-- `VOCAL_BRIDGE_API_KEY` / `VOCAL_BRIDGE_BASE_URL`
+- `VOCAL_BRIDGE_API_KEY` / `VOCAL_BRIDGE_AGENT_ID` / `VOCAL_BRIDGE_BASE_URL`
+  - Browser connects via `POST /api/voice-token` (key stays server-side)
+  - Smoke test: `node scripts/test-vocal-bridge.mjs`
 
 ## Voice commands
 
