@@ -13,6 +13,7 @@ import { SailorMascot } from './SailorMascot';
 import { PaymentPanel } from './PaymentPanel';
 import { DisruptionBanner } from './DisruptionBanner';
 import { InstallPrompt } from './InstallPrompt';
+import { VocalBridgeControls } from './VocalBridgeControls';
 import { createRecognizer, isSpeechSupported, speak, stopSpeaking } from '@/lib/speech';
 import { unlockRouletteAudio } from '@/lib/roulette-sound';
 import { startSailorTheme, toggleSailorTheme } from '@/lib/sailor-theme';
@@ -85,6 +86,7 @@ export function VoiceAgent() {
   const [forcedIndex, setForcedIndex] = useState<number | null>(null);
   const [wheelSize, setWheelSize] = useState(400);
   const [themeOn, setThemeOn] = useState(false);
+  const [vbLive, setVbLive] = useState(false);
   const recognitionRef = useRef<ReturnType<typeof createRecognizer>>(null);
   const musicStarted = useRef(false);
   const sid = useMemo(() => sessionId(), []);
@@ -114,9 +116,10 @@ export function VoiceAgent() {
     return () => window.removeEventListener('resize', sync);
   }, []);
 
-  const talk = useCallback((line: string) => {
+  const talk = useCallback((line: string, { localTts = true }: { localTts?: boolean } = {}) => {
     setAgentLine(line);
-    speak(line);
+    // When Vocal Bridge is live, the agent speaks over WebRTC — skip browser TTS.
+    if (localTts) speak(line);
   }, []);
 
   const bumpSpin = useCallback((landOn?: number | null) => {
@@ -125,9 +128,15 @@ export function VoiceAgent() {
   }, []);
 
   const sendTranscript = useCallback(
-    async (raw: string, { withSpin = false }: { withSpin?: boolean } = {}) => {
+    async (
+      raw: string,
+      {
+        withSpin = false,
+        localTts = true,
+      }: { withSpin?: boolean; localTts?: boolean } = {},
+    ): Promise<string> => {
       const cleaned = raw.trim();
-      if (!cleaned) return;
+      if (!cleaned) return '';
 
       setTranscript(cleaned);
       setPhase('thinking');
@@ -171,13 +180,25 @@ export function VoiceAgent() {
         else if (data.options?.length) setPhase('awaiting_choice');
         else setPhase('idle');
 
-        talk(data.speech || data.error || 'Done.');
+        const line = data.speech || data.error || 'Done.';
+        talk(line, { localTts });
+        return line;
       } catch {
         setPhase('idle');
-        talk('I hit turbulence talking to the servers. Try again.');
+        const line = 'I hit turbulence talking to the servers. Try again.';
+        talk(line, { localTts });
+        return line;
       }
     },
     [bumpSpin, ensureTheme, sid, talk],
+  );
+
+  const onVocalBridgeUtterance = useCallback(
+    async (text: string) => {
+      // VB plays agent audio; avoid double-speaking via Web Speech.
+      return sendTranscript(text, { withSpin: true, localTts: false });
+    },
+    [sendTranscript],
   );
 
   const startListening = useCallback(() => {
@@ -352,23 +373,36 @@ export function VoiceAgent() {
           />
         </div>
 
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-5">
-          <button
-            type="button"
-            onClick={onWheelSpinRequest}
-            disabled={phase === 'thinking'}
-            className="bg-[var(--spinach)] px-6 py-3 font-display text-sm uppercase tracking-[0.18em] text-[var(--sand)] shadow-lg transition hover:brightness-110 disabled:opacity-50"
-          >
-            {options.length ? 'Spin again' : 'Spin & sail'}
-          </button>
-          <MicButton
-            listening={listening}
-            thinking={phase === 'thinking'}
-            onClick={() => {
-              ensureTheme();
-              toggleMic();
-            }}
+        <div className="mt-6 flex w-full max-w-xl flex-col items-center gap-4">
+          <VocalBridgeControls
+            sessionId={sid}
+            onUserUtterance={onVocalBridgeUtterance}
+            onConnectionChange={setVbLive}
           />
+          <div className="flex flex-wrap items-center justify-center gap-5">
+            <button
+              type="button"
+              onClick={onWheelSpinRequest}
+              disabled={phase === 'thinking'}
+              className="bg-[var(--spinach)] px-6 py-3 font-display text-sm uppercase tracking-[0.18em] text-[var(--sand)] shadow-lg transition hover:brightness-110 disabled:opacity-50"
+            >
+              {options.length ? 'Spin again' : 'Spin & sail'}
+            </button>
+            <MicButton
+              listening={listening}
+              thinking={phase === 'thinking'}
+              disabled={vbLive}
+              onClick={() => {
+                ensureTheme();
+                toggleMic();
+              }}
+            />
+          </div>
+          {vbLive && (
+            <p className="text-center text-xs text-[var(--sand)]/55">
+              Browser mic is paused while Vocal Bridge is live — talk to the agent directly.
+            </p>
+          )}
         </div>
 
         <div className="mt-5 max-w-lg text-center">

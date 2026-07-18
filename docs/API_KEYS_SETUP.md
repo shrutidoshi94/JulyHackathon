@@ -29,11 +29,15 @@ Sandbox buyer account: **Testing Tools → Sandbox Accounts**.
 Portal: [https://vocalbridgeai.com/](https://vocalbridgeai.com/)  
 Docs: [https://vocalbridgeai.com/docs/overview](https://vocalbridgeai.com/docs/overview)
 
-1. Create a free account.
+1. Create a free / trial account.
 2. Create a voice agent (system prompt can be WanderWheel’s travel agent persona).
 3. Copy the **Agent UUID** → `VOCAL_BRIDGE_AGENT_ID`
 4. Create an **API key** (account or agent key; starts with `vb_`) → `VOCAL_BRIDGE_API_KEY`
 5. Set `VOCAL_BRIDGE_BASE_URL=https://vocalbridgeai.com`
+6. (Recommended) In the agent dashboard, enable **AI Agent** mode so spoken questions are forwarded to WanderWheel’s `/api/voice/intent` brain via the SDK `useAIAgent` hook.
+7. Restart `npm run dev`, open `/`, click **Start Vocal Bridge**, allow the mic, and talk.
+
+Frontend wiring: `POST /api/voice-token` proxies `https://vocalbridgeai.com/api/v1/token` with `X-API-Key` (and `X-Agent-Id` when set). The browser never sees your API key.
 
 ---
 
